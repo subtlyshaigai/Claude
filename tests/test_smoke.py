@@ -1,26 +1,16 @@
 """Smoke tests for Aries that run fully offline (no API key required).
 
 They verify the database, repository, tools, briefings, and HTTP API all work
-end-to-end against a temporary database.
+end-to-end against a temporary database. Environment is prepared in conftest.py.
 """
 
-import os
-import tempfile
-from pathlib import Path
-
 import pytest
+from fastapi.testclient import TestClient
 
-# Point the app at a throwaway database BEFORE importing any app module.
-_TMP = tempfile.mkdtemp()
-os.environ["ARIES_DB_PATH"] = str(Path(_TMP) / "test.db")
-os.environ.setdefault("ANTHROPIC_API_KEY", "")  # force offline path
-
-from fastapi.testclient import TestClient  # noqa: E402
-
-from aries import repository as repo  # noqa: E402
-from aries import tools  # noqa: E402
-from aries.briefings import build_digest, operating_snapshot  # noqa: E402
-from aries.server import app  # noqa: E402
+from aries import repository as repo
+from aries import tools
+from aries.briefings import build_digest, operating_snapshot
+from aries.server import app
 
 client = TestClient(app)
 

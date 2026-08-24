@@ -27,8 +27,20 @@ CREATE TABLE IF NOT EXISTS users (
     name          TEXT NOT NULL,
     role          TEXT NOT NULL DEFAULT 'family',
     preferences   TEXT NOT NULL DEFAULT '{}',   -- JSON blob of personalization
+    password_hash TEXT NOT NULL DEFAULT '',      -- scrypt hash; empty = no password set
+    password_salt TEXT NOT NULL DEFAULT '',
+    is_active     INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT NOT NULL,
     UNIQUE(name)
+);
+
+-- Browser login sessions (Spec 25: authority tied to identity).
+CREATE TABLE IF NOT EXISTS sessions (
+    token         TEXT PRIMARY KEY,
+    user_id       INTEGER NOT NULL,
+    created_at    TEXT NOT NULL,
+    expires_at    TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
 );
 
 -- Projects / businesses / ventures tracked by Aries (Spec 5.3, 5.4).
@@ -113,10 +125,31 @@ CREATE TABLE IF NOT EXISTS events (
     attendees     TEXT DEFAULT '',
     project_id    INTEGER,
     user_id       INTEGER,
+    source        TEXT NOT NULL DEFAULT 'local',   -- local | google | proposed
+    external_id   TEXT,                            -- provider event id when synced
+    external_updated TEXT,                         -- provider's last-updated timestamp
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
     FOREIGN KEY(project_id) REFERENCES projects(id),
     FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+-- Emails pulled in for awareness (Spec 5.6). Read + propose: bodies summarized,
+-- drafts prepared, but sending is gated. Pruned with the chat retention policy.
+CREATE TABLE IF NOT EXISTS emails (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    external_id   TEXT,                            -- provider message id
+    thread_id     TEXT,
+    sender        TEXT DEFAULT '',
+    recipient     TEXT DEFAULT '',
+    subject       TEXT DEFAULT '',
+    snippet       TEXT DEFAULT '',
+    received_at   TEXT,
+    is_unread     INTEGER NOT NULL DEFAULT 1,
+    category      TEXT DEFAULT 'uncategorized',
+    source        TEXT NOT NULL DEFAULT 'google',
+    created_at    TEXT NOT NULL,
+    UNIQUE(external_id)
 );
 
 -- Decision log & decision briefs (Spec 12, 20).
@@ -187,7 +220,35 @@ CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_events_start ON events(starts_at);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory(scope);
+CREATE INDEX IF NOT EXISTS idx_events_source ON events(source);
+CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 """
+
+
+# Columns added after the first release. Applied idempotently so databases
+# created by an earlier version pick them up without a manual migration.
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "users": {
+        "password_hash": "TEXT NOT NULL DEFAULT ''",
+        "password_salt": "TEXT NOT NULL DEFAULT ''",
+        "is_active": "INTEGER NOT NULL DEFAULT 1",
+    },
+    "events": {
+        "source": "TEXT NOT NULL DEFAULT 'local'",
+        "external_id": "TEXT",
+        "external_updated": "TEXT",
+    },
+}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for col, decl in columns.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    conn.commit()
 
 
 _connection: sqlite3.Connection | None = None
@@ -210,6 +271,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON;")
     conn.executescript(SCHEMA)
     conn.commit()
+    _migrate(conn)
     if db_path is None:
         _connection = conn
     return conn

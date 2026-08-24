@@ -34,8 +34,15 @@ Aries' reasoning, using **your own API key**.
 - **Memory & continuity.** Goals, preferences, and business facts persist. Raw
   chat logs auto-prune after 7 days; completed goals are archived (never
   silently deleted) with outcome notes.
-- **Family-friendly.** Add household members; Aries greets and addresses the
-  current speaker by name.
+- **Family authentication.** Each household member signs in with their own
+  password; the Principal sets up the first account and adds members. Aries
+  greets and addresses the signed-in speaker by name. (Can be disabled for a
+  single-user local start.)
+- **Google integration (Gmail + Calendar), read + propose.** Connect a Google
+  account via OAuth. Aries imports your calendar and inbox for awareness and
+  briefings (autonomous, read-only), categorizes email, and can **draft**
+  replies and **propose** events — but sending mail or writing to your calendar
+  always requires your explicit confirmation, per the autonomy model.
 - **Offline-aware.** If the model is unreachable, Aries keeps the dashboard,
   data, and briefings working, queues the conversation, and flags genuine alerts
   with a household **integrity phrase** so you can trust they're real.
@@ -88,6 +95,35 @@ That's it. Aries creates its database on first run.
 | `ARIES_INTEGRITY_PHRASE` | `The stars hold steady.` | Prepended to genuine urgent alerts so your family can verify authenticity. **Change this.** |
 | `ARIES_CHATLOG_RETENTION_DAYS` | `7` | Days of raw chat logs kept before pruning. |
 
+### First-run login (when `ARIES_REQUIRE_AUTH=true`, the default)
+
+On first launch the browser shows a **setup screen** — choose the Principal's
+name and password. After that, everyone signs in on the login screen. The
+Principal can add family members from the **+ member** button (each gets their
+own password). Sessions last `ARIES_SESSION_TTL_HOURS` (default 14 days) via an
+HTTP-only cookie. Passwords are salted and hashed with `scrypt`; nothing is
+stored in plaintext. Set `ARIES_REQUIRE_AUTH=false` for a quick single-user
+start with no login.
+
+### Connecting Google (Gmail + Calendar)
+
+1. In [Google Cloud Console](https://console.cloud.google.com/): create a
+   project, enable the **Google Calendar API** and **Gmail API**, and configure
+   the OAuth consent screen (External; add yourself as a test user).
+2. Create an **OAuth client ID → Web application**, and add this authorized
+   redirect URI exactly (match host/port to your config):
+   `http://127.0.0.1:8787/api/integrations/google/callback`
+3. Put the client ID/secret in `.env` (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`),
+   or drop the downloaded JSON at `data/google_credentials.json`.
+4. Restart Aries, open **⚙ Integrations → Connect Google account**, and approve.
+5. Use **⟳ Sync Google** (or ask Aries to sync). The token is stored locally at
+   `data/google_token.json` and never leaves your machine. Disconnect anytime
+   from the Integrations panel.
+
+**Scopes requested:** calendar events (read/write), Gmail read-only, and Gmail
+compose. Even with write scopes, Aries only writes to your calendar or sends
+mail through confirmation-gated actions.
+
 ### Letting family devices connect (optional)
 
 By default Aries is reachable only from the machine it runs on. To let other
@@ -132,6 +168,8 @@ authority it hasn't been given.
 | Memory & Continuity, Memory Scope (7-day logs, archive-don't-delete) | `repository.py`, `server.py` startup prune |
 | Proactive Monitoring (conflicts, overdue, risks) | `briefings.py` snapshot & `_risks()` |
 | Integrity phrase / offline failure behavior | `assistant.py`, `config.py` |
+| Communications: monitor channels, categorize, draft, track (5.6) | `integrations/google.py`, `sync.py`, `draft_email`/`send_email` tools |
+| Authority tied to identity; family use | `auth.py`, session-scoped speaker |
 
 ---
 
@@ -140,16 +178,24 @@ authority it hasn't been given.
 ```
 run.py                  Launch entry point (uvicorn)
 aries/
-  config.py             Env-based settings
+  config.py             Env-based settings (incl. auth + Google)
   persona.py            Aries' identity & operating law -> system prompt
-  database.py           SQLite schema & connection
-  repository.py         Data-access helpers (CRUD, queries, retention)
+  database.py           SQLite schema, migrations & connection
+  repository.py         Data-access helpers (CRUD, queries, retention, sessions)
+  auth.py               Password hashing (scrypt) + browser sessions
   tools.py              Claude tool schemas + dispatcher (confirmation gates)
   briefings.py          Operating snapshot + daily/weekly/monthly digests
   assistant.py          Claude tool-use conversation loop (+ offline fallback)
-  server.py             FastAPI app: web UI + JSON API
+  sync.py               Google -> local operating-picture sync + categorization
+  integrations/
+    google.py           Gmail + Calendar (OAuth, read + gated write); lazy imports
+  server.py             FastAPI app: web UI + JSON API + OAuth callback
   static/               Vanilla HTML/CSS/JS UI (no build step)
-tests/test_smoke.py     Offline end-to-end tests (no API key needed)
+tests/
+  conftest.py           Shared test env
+  test_smoke.py         Offline end-to-end tests (no API key needed)
+  test_auth.py          Setup / login / session protection
+  test_google.py        Sync + categorization + confirmation gates (mocked)
 ```
 
 No build tooling, no external services beyond the Anthropic API. The UI is

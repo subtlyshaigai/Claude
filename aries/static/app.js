@@ -18,9 +18,13 @@ async function api(path, opts) {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });
+  if (res.status === 401) {
+    showAuthGate();
+    throw new Error("Authentication required.");
+  }
   if (!res.ok) {
     let msg = res.statusText;
-    try { msg = (await res.json()).detail || (await res.json()).error || msg; } catch (_) {}
+    try { const j = await res.json(); msg = j.detail || j.error || msg; } catch (_) {}
     throw new Error(msg);
   }
   return res.json();
@@ -29,7 +33,7 @@ async function api(path, opts) {
 // --------------------------------------------------------------------------
 // State
 // --------------------------------------------------------------------------
-const state = { userId: null, users: [], tab: "projects", data: null };
+const state = { userId: null, users: [], tab: "projects", data: null, auth: null, currentUser: null };
 
 // --------------------------------------------------------------------------
 // Status + users
@@ -37,6 +41,7 @@ const state = { userId: null, users: [], tab: "projects", data: null };
 async function loadStatus() {
   try {
     const s = await api("/api/status");
+    state.status = s;
     const pill = $("#statusPill");
     if (s.llm_enabled) {
       pill.className = "pill pill-ok";
@@ -45,6 +50,8 @@ async function loadStatus() {
       pill.className = "pill pill-off";
       pill.textContent = "offline · no API key";
     }
+    // Show the Sync Google button only when an account is connected.
+    $("#syncGoogleBtn").classList.toggle("hidden", !(s.google && s.google.connected));
   } catch (e) {
     $("#statusPill").textContent = "unreachable";
   }
@@ -98,7 +105,7 @@ async function sendMessage(message) {
   try {
     const r = await api("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ message, user_id: state.userId }),
+      body: JSON.stringify({ message }),
     });
     thinking.remove();
     addMessage("Aries", r.reply, r.actions);
@@ -113,7 +120,7 @@ async function runBriefing(kind) {
   const thinking = addMessage("Aries", `Preparing ${kind} briefing…`);
   thinking.querySelector(".bubble").classList.add("typing");
   try {
-    const r = await api(`/api/briefing/${kind}?user_id=${state.userId}`);
+    const r = await api(`/api/briefing/${kind}`);
     thinking.remove();
     addMessage("Aries", r.reply);
   } catch (e) {
@@ -123,6 +130,7 @@ async function runBriefing(kind) {
 }
 
 const userName = () => {
+  if (state.currentUser) return state.currentUser.name;
   const u = state.users.find((x) => x.id === state.userId);
   return u ? u.name : "You";
 };
@@ -219,6 +227,33 @@ const RENDERERS = {
       const acts = el("div", "card-actions");
       acts.appendChild(mini("Edit", () => openForm("events", e)));
       acts.appendChild(mini("Delete", () => deleteEvent(e.id)));
+      c.appendChild(acts);
+      body.appendChild(c);
+    });
+    return body;
+  },
+
+  inbox() {
+    const body = el("div");
+    const head = boardHead("Inbox (synced from Gmail)", "⟳ Sync", () => triggerGoogleSync());
+    body.appendChild(head);
+    const items = state.data.emails || [];
+    if (!items.length) {
+      body.appendChild(empty("No emails synced. Connect Google in ⚙ Integrations, then Sync."));
+      return body;
+    }
+    items.forEach((m) => {
+      const c = card(
+        `<div class="row1"><span class="title">${esc(m.subject || "(no subject)")}</span>
+         <span class="email-cat ${esc(m.category)}">${esc(m.category)}</span></div>
+         <div class="meta">${esc(m.sender)}${m.received_at ? " · " + esc(fmtWhen(m.received_at)) : ""}${m.is_unread ? " · unread" : ""}</div>
+         ${m.snippet ? `<div class="sub">${esc(m.snippet)}</div>` : ""}`
+      );
+      const acts = el("div", "card-actions");
+      acts.appendChild(mini("Draft reply", () => {
+        $("#chatInput").value = `Draft a reply to the email from ${m.sender} — subject "${m.subject}". `;
+        $("#chatInput").focus();
+      }));
       c.appendChild(acts);
       body.appendChild(c);
     });
@@ -519,6 +554,193 @@ function openForm(entity, existing) {
 function closeModal() { $("#modal").classList.add("hidden"); }
 
 // --------------------------------------------------------------------------
+// Authentication gate
+// --------------------------------------------------------------------------
+let authMode = "login"; // or "setup"
+
+function showAuthGate() { $("#authGate").classList.remove("hidden"); }
+function hideAuthGate() { $("#authGate").classList.add("hidden"); }
+
+function configureAuthForm() {
+  const err = $("#authError");
+  err.classList.add("hidden");
+  if (authMode === "setup") {
+    $("#authSub").textContent = "First-run setup — create the Principal account";
+    $("#authName").value = "Principal";
+    $("#authName").placeholder = "Principal name";
+    $("#authPassword").placeholder = "Choose a password (min 6 chars)";
+    $("#authPassword").autocomplete = "new-password";
+    $("#authSubmit").textContent = "Create account";
+    $("#authHint").textContent = "This sets the Principal's password. You can add family members afterwards, each with their own login.";
+  } else {
+    $("#authSub").textContent = "Constellation01 · Executive Chief of Staff";
+    $("#authPassword").placeholder = "Password";
+    $("#authPassword").autocomplete = "current-password";
+    $("#authSubmit").textContent = "Sign in";
+    $("#authHint").textContent = "";
+  }
+}
+
+function authError(msg) {
+  const err = $("#authError");
+  err.textContent = msg;
+  err.classList.remove("hidden");
+}
+
+async function handleAuthSubmit(e) {
+  e.preventDefault();
+  const name = $("#authName").value.trim();
+  const password = $("#authPassword").value;
+  if (!name || !password) return authError("Name and password are required.");
+  try {
+    if (authMode === "setup") {
+      await api("/api/auth/setup", { method: "POST", body: JSON.stringify({ name, password }) });
+      await api("/api/auth/login", { method: "POST", body: JSON.stringify({ name, password }) });
+    } else {
+      await api("/api/auth/login", { method: "POST", body: JSON.stringify({ name, password }) });
+    }
+    $("#authPassword").value = "";
+    hideAuthGate();
+    await loadApp();
+  } catch (err) {
+    authError(err.message);
+  }
+}
+
+async function checkAuthAndBoot() {
+  let s;
+  try {
+    s = await api("/api/auth/state");
+  } catch (_) {
+    // /api/auth/state is public; if it fails, surface login anyway.
+    authMode = "login";
+    configureAuthForm();
+    return showAuthGate();
+  }
+  state.auth = s;
+  if (!s.require_auth) {
+    hideAuthGate();
+    return loadApp();
+  }
+  if (s.setup_needed) {
+    authMode = "setup";
+    configureAuthForm();
+    return showAuthGate();
+  }
+  if (!s.authenticated) {
+    authMode = "login";
+    configureAuthForm();
+    return showAuthGate();
+  }
+  hideAuthGate();
+  return loadApp();
+}
+
+// --------------------------------------------------------------------------
+// Integrations modal
+// --------------------------------------------------------------------------
+async function openIntegrations() {
+  $("#modalTitle").textContent = "Integrations";
+  const body = $("#modalBody");
+  body.innerHTML = "<div class='empty'>Loading…</div>";
+  $("#modal").classList.remove("hidden");
+  let g;
+  try { g = await api("/api/integrations/google/status"); }
+  catch (e) { body.innerHTML = `<div class="auth-error">${esc(e.message)}</div>`; return; }
+
+  body.innerHTML = "";
+  const row = el("div", "intg-row");
+  row.appendChild(el("div", null, "<strong>Google</strong><div class='meta'>Gmail + Calendar · read &amp; propose</div>"));
+  const statusEl = el("span", "intg-status " + (g.connected ? "ok" : "off"),
+    g.connected ? "Connected" : g.configured ? "Not connected" : "Not configured");
+  row.appendChild(statusEl);
+  body.appendChild(row);
+
+  const controls = el("div", "card-actions");
+  if (g.connected) {
+    controls.appendChild(mini("Sync now", async () => { await triggerGoogleSync(); }));
+    controls.appendChild(mini("Disconnect", async () => {
+      if (!confirm("Disconnect the Google account? Aries will stop reading your calendar and email.")) return;
+      await api("/api/integrations/google/disconnect", { method: "POST" });
+      openIntegrations(); loadStatus();
+    }));
+  } else if (g.configured) {
+    controls.appendChild(mini("Connect Google account", async () => {
+      try {
+        const r = await api("/api/integrations/google/connect");
+        window.location.href = r.auth_url;
+      } catch (e) { alert(e.message); }
+    }));
+  }
+  body.appendChild(controls);
+
+  if (!g.configured) {
+    body.appendChild(el("div", "intg-steps",
+      "To enable Gmail + Calendar, add OAuth credentials in your <code>.env</code> " +
+      "(<code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code>) and register this redirect URI in Google Cloud:<br><code>" +
+      esc(g.redirect_uri) + "</code><br>Full steps are in <code>.env.example</code> and the README."));
+  } else if (!g.connected) {
+    body.appendChild(el("div", "intg-steps",
+      "Read + propose: Aries imports your calendar and inbox for awareness. " +
+      "Sending email and writing calendar events always require your confirmation."));
+  }
+}
+
+async function triggerGoogleSync() {
+  const pill = $("#statusPill");
+  const prev = pill.textContent;
+  pill.textContent = "syncing…";
+  try {
+    const r = await api("/api/integrations/google/sync", { method: "POST" });
+    addMessage("Aries", `Synced Google. Calendar: ${r.calendar.added} new, ${r.calendar.updated} updated. ` +
+      `Inbox: ${r.inbox.synced} messages pulled.`);
+    await loadDashboard();
+  } catch (e) {
+    addMessage("Aries", "Google sync failed: " + e.message);
+  } finally {
+    pill.textContent = prev;
+  }
+}
+
+// --------------------------------------------------------------------------
+// App load (post-auth) + header configuration
+// --------------------------------------------------------------------------
+async function loadApp() {
+  await loadStatus();
+  const requireAuth = state.auth && state.auth.require_auth;
+  if (requireAuth && state.auth.user) {
+    state.currentUser = state.auth.user;
+    // Under auth, the speaker is the signed-in user.
+    $("#userPicker").classList.add("hidden");
+    $("#userIdentity").classList.remove("hidden");
+    $("#whoami").textContent = state.auth.user.name + (state.auth.user.role === "principal" ? " ★" : "");
+    $("#logoutBtn").classList.remove("hidden");
+    $("#addUserBtn").classList.toggle("hidden", state.auth.user.role !== "principal");
+  } else {
+    // No-auth mode: keep the classic "speaking as" picker.
+    $("#userPicker").classList.remove("hidden");
+    $("#userIdentity").classList.add("hidden");
+    $("#logoutBtn").classList.add("hidden");
+    await loadUsers();
+  }
+  await loadDashboard();
+  handleGoogleReturn();
+}
+
+function handleGoogleReturn() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("google_connected")) {
+    addMessage("Aries", "Google account connected. I can now read your calendar and inbox. " +
+      "Use ⟳ Sync Google or ask me to sync. Sending and calendar writes remain gated.");
+    loadStatus();
+    window.history.replaceState({}, "", window.location.pathname);
+  } else if (params.get("google_error")) {
+    addMessage("Aries", "Google connection did not complete: " + esc(params.get("google_error")));
+    window.history.replaceState({}, "", window.location.pathname);
+  }
+}
+
+// --------------------------------------------------------------------------
 // Wire-up
 // --------------------------------------------------------------------------
 function init() {
@@ -552,10 +774,32 @@ function init() {
   $("#addUserBtn").addEventListener("click", async () => {
     const name = prompt("Family member's name:");
     if (!name) return;
-    const role = confirm("Is this the Principal (primary owner)? OK = yes, Cancel = family member.") ? "principal" : "family";
-    await api("/api/users", { method: "POST", body: JSON.stringify({ name, role }) });
-    await loadUsers();
+    const requireAuth = state.auth && state.auth.require_auth;
+    let payload = { name, role: "family" };
+    if (requireAuth) {
+      const password = prompt(`Set a login password for ${name} (min 6 chars):`);
+      if (!password) return;
+      payload.password = password;
+    } else {
+      payload.role = confirm("Is this the Principal (primary owner)? OK = yes, Cancel = family member.") ? "principal" : "family";
+    }
+    try {
+      await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
+      if (!requireAuth) await loadUsers();
+      else alert(`${name} can now sign in with their password.`);
+    } catch (e) { alert("Could not add member: " + e.message); }
   });
+
+  $("#integrationsBtn").addEventListener("click", openIntegrations);
+  $("#syncGoogleBtn").addEventListener("click", triggerGoogleSync);
+  $("#logoutBtn").addEventListener("click", async () => {
+    await api("/api/auth/logout", { method: "POST" });
+    state.currentUser = null;
+    authMode = "login";
+    configureAuthForm();
+    showAuthGate();
+  });
+  $("#authForm").addEventListener("submit", handleAuthSubmit);
 
   $("#modalClose").addEventListener("click", closeModal);
   $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
@@ -565,7 +809,5 @@ function init() {
 
 (async function boot() {
   init();
-  await loadStatus();
-  await loadUsers();
-  await loadDashboard();
+  await checkAuthAndBoot();
 })();

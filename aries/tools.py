@@ -363,19 +363,115 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    # ---- Google integration (read = autonomous, write = gated) ----------- #
+    {
+        "name": "sync_google_calendar",
+        "description": "Pull the user's Google Calendar into the local operating "
+        "picture (read-only, autonomous). Call before scheduling questions or "
+        "briefings when a Google account is connected.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_back": {"type": "integer"},
+                "days_forward": {"type": "integer"},
+            },
+        },
+    },
+    {
+        "name": "sync_google_inbox",
+        "description": "Pull recent Gmail headers/snippets into the local store and "
+        "categorize them (read-only, autonomous). Use for communications triage.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_results": {"type": "integer"},
+                "unread_only": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "list_emails",
+        "description": "List locally-synced emails (read-only), optionally unread only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"unread_only": {"type": "boolean"}},
+        },
+    },
+    {
+        "name": "draft_email",
+        "description": "Prepare a Gmail DRAFT (Level 2 preparation). This does NOT send. "
+        "Use to stage a reply for the Principal to review and send.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+            },
+            "required": ["to", "subject", "body"],
+        },
+    },
+    {
+        "name": "send_email",
+        "description": "Send an email via Gmail. GATED (Level 4): consequential and hard to "
+        "undo. First state to the user exactly what will be sent and to whom, get "
+        "explicit approval, then call again with confirmed=true. Never send without it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+                "confirmed": {"type": "boolean", "description": "Must be true; set only after explicit approval."},
+            },
+            "required": ["to", "subject", "body", "confirmed"],
+        },
+    },
+    {
+        "name": "push_event_to_google",
+        "description": "Create an event on the user's real Google Calendar. GATED (Level 4). "
+        "Confirm the details with the user first, then call with confirmed=true.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "starts_at": {"type": "string", "description": "ISO datetime"},
+                "ends_at": {"type": "string"},
+                "location": {"type": "string"},
+                "description": {"type": "string"},
+                "confirmed": {"type": "boolean", "description": "Must be true; set only after explicit approval."},
+            },
+            "required": ["title", "starts_at", "confirmed"],
+        },
+    },
 ]
 
 
 # --------------------------------------------------------------------------- #
 # Dispatch
 # --------------------------------------------------------------------------- #
+# Read-only tools: autonomous (Level 0), no audit row from the dispatcher.
+_READ_ONLY = {
+    "sync_google_calendar", "sync_google_inbox",  # read Google -> local; self-logged
+}
+# Gated tools that require explicit confirmation (Level 4 Confirm).
+_GATED = {"delete_event", "send_email", "push_event_to_google"}
+
+
+def _is_read(tool_name: str) -> bool:
+    return tool_name.startswith(("list_", "get_", "search_")) or tool_name in _READ_ONLY
+
+
 def _autonomy_for(tool_name: str) -> int:
     """Best-effort mapping of a tool to the autonomy level it represents, for
-    the audit log. Reads are 0; local writes are effectively Level 3 execute."""
-    if tool_name.startswith(("list_", "get_", "search_")):
+    the audit log. Reads are 0; gated writes are Level 4; drafts are Level 2;
+    ordinary local writes are effectively Level 3 execute."""
+    if _is_read(tool_name):
         return 0
-    if tool_name == "delete_event":
+    if tool_name in _GATED:
         return 4
+    if tool_name == "draft_email":
+        return 2
     return 3
 
 
@@ -390,12 +486,12 @@ def dispatch(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover - defensive
         return {"error": f"{type(exc).__name__}: {exc}"}
 
-    # Audit every mutating call.
-    if not tool_name.startswith(("list_", "get_", "search_")) and "error" not in result:
+    # Audit every mutating call (reads and self-logging syncs excluded).
+    if not _is_read(tool_name) and "error" not in result:
         repo.log_action(
             tool=tool_name,
             summary=result.get("_summary", tool_name),
-            payload=args,
+            payload={k: v for k, v in args.items() if k != "body"},  # keep email bodies out of the log
             autonomy_level=_autonomy_for(tool_name),
         )
     result.pop("_summary", None)
@@ -563,6 +659,87 @@ def _h_list_memory(a: dict) -> dict:
     return {"memory": repo.list_memory(scope=a.get("scope"), category=a.get("category"))}
 
 
+# ---- Google handlers ------------------------------------------------------ #
+def _google_guard():
+    from .integrations import google
+    if not google.is_connected():
+        raise google.GoogleUnavailable(
+            "No Google account is connected. Ask the Principal to connect one in the "
+            "Integrations panel."
+        )
+
+
+def _h_sync_google_calendar(a: dict) -> dict:
+    from . import sync
+    from .integrations.google import GoogleUnavailable
+    try:
+        _google_guard()
+        res = sync.sync_calendar(days_back=a.get("days_back", 1), days_forward=a.get("days_forward", 14))
+    except GoogleUnavailable as exc:
+        return {"error": str(exc)}
+    return {"result": res, "_summary": f"Synced Google Calendar ({res['added']} new, {res['updated']} updated)"}
+
+
+def _h_sync_google_inbox(a: dict) -> dict:
+    from . import sync
+    from .integrations.google import GoogleUnavailable
+    try:
+        _google_guard()
+        res = sync.sync_inbox(max_results=a.get("max_results", 25), unread_only=a.get("unread_only", True))
+    except GoogleUnavailable as exc:
+        return {"error": str(exc)}
+    return {"result": res, "_summary": f"Synced Gmail ({res['synced']} messages)"}
+
+
+def _h_list_emails(a: dict) -> dict:
+    return {"emails": repo.list_emails(unread_only=a.get("unread_only", False))}
+
+
+def _h_draft_email(a: dict) -> dict:
+    from .integrations import google
+    try:
+        _google_guard()
+        res = google.create_draft(a["to"], a["subject"], a["body"])
+    except google.GoogleUnavailable as exc:
+        return {"error": str(exc)}
+    return {"draft": res, "_summary": f"Drafted email to {a['to']} (not sent)"}
+
+
+def _h_send_email(a: dict) -> dict:
+    from .integrations import google
+    if not a.get("confirmed"):
+        return {"error": "Send refused: confirmation gate. State the recipient, subject, and "
+                         "body to the user, obtain approval, then call again with confirmed=true."}
+    try:
+        _google_guard()
+        res = google.send_email(a["to"], a["subject"], a["body"])
+    except google.GoogleUnavailable as exc:
+        return {"error": str(exc)}
+    return {"sent": res, "_summary": f"Sent email to {a['to']} (confirmed)"}
+
+
+def _h_push_event_to_google(a: dict) -> dict:
+    from .integrations import google
+    if not a.get("confirmed"):
+        return {"error": "Push refused: confirmation gate. Confirm the event details with the "
+                         "user, then call again with confirmed=true."}
+    try:
+        _google_guard()
+        res = google.push_event(
+            title=a["title"], starts_at=a["starts_at"], ends_at=a.get("ends_at"),
+            location=a.get("location", ""), description=a.get("description", ""),
+        )
+    except google.GoogleUnavailable as exc:
+        return {"error": str(exc)}
+    # Mirror the pushed event locally so it appears immediately.
+    if res.get("external_id"):
+        repo.create_event(
+            title=a["title"], starts_at=a["starts_at"], ends_at=a.get("ends_at"),
+            location=a.get("location", ""), source="google", external_id=res["external_id"],
+        )
+    return {"event": res, "_summary": f"Created Google Calendar event '{a['title']}' (confirmed)"}
+
+
 _DISPATCH: dict[str, Callable[[dict], dict]] = {
     "get_operating_picture": _h_get_operating_picture,
     "create_project": _h_create_project,
@@ -590,4 +767,10 @@ _DISPATCH: dict[str, Callable[[dict], dict]] = {
     "archive_memory": _h_archive_memory,
     "search_memory": _h_search_memory,
     "list_memory": _h_list_memory,
+    "sync_google_calendar": _h_sync_google_calendar,
+    "sync_google_inbox": _h_sync_google_inbox,
+    "list_emails": _h_list_emails,
+    "draft_email": _h_draft_email,
+    "send_email": _h_send_email,
+    "push_event_to_google": _h_push_event_to_google,
 }

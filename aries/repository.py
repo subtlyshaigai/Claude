@@ -57,6 +57,111 @@ def update_user_preferences(user_id: int, preferences: dict) -> dict[str, Any] |
     return get_user(user_id)
 
 
+def get_user_by_name(name: str) -> dict[str, Any] | None:
+    conn = get_connection()
+    return row_to_dict(conn.execute("SELECT * FROM users WHERE name=?", (name.strip(),)).fetchone())
+
+
+def set_user_password(user_id: int, password_hash: str, password_salt: str) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE users SET password_hash=?, password_salt=? WHERE id=?",
+        (password_hash, password_salt, user_id),
+    )
+    conn.commit()
+
+
+def any_password_set() -> bool:
+    """True once at least one user has a password — i.e. first-run setup is done."""
+    conn = get_connection()
+    row = conn.execute("SELECT COUNT(*) c FROM users WHERE password_hash != ''").fetchone()
+    return row["c"] > 0
+
+
+# --------------------------------------------------------------------------- #
+# Sessions
+# --------------------------------------------------------------------------- #
+def create_session(token: str, user_id: int, expires_at: str) -> None:
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
+        (token, user_id, utcnow(), expires_at),
+    )
+    conn.commit()
+
+
+def get_session_user(token: str) -> dict[str, Any] | None:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id "
+        "WHERE s.token=? AND s.expires_at > ?",
+        (token, utcnow()),
+    ).fetchone()
+    return row_to_dict(row)
+
+
+def delete_session(token: str) -> None:
+    conn = get_connection()
+    conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+    conn.commit()
+
+
+def prune_sessions() -> int:
+    conn = get_connection()
+    cur = conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (utcnow(),))
+    conn.commit()
+    return cur.rowcount
+
+
+# --------------------------------------------------------------------------- #
+# Emails (read + propose)
+# --------------------------------------------------------------------------- #
+def upsert_email(**kw) -> dict[str, Any]:
+    """Insert an email by external_id, or update its unread/category on repeat."""
+    conn = get_connection()
+    ext = kw.get("external_id")
+    existing = None
+    if ext:
+        existing = conn.execute("SELECT * FROM emails WHERE external_id=?", (ext,)).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE emails SET is_unread=?, category=? WHERE external_id=?",
+            (kw.get("is_unread", existing["is_unread"]), kw.get("category", existing["category"]), ext),
+        )
+        conn.commit()
+        return row_to_dict(conn.execute("SELECT * FROM emails WHERE external_id=?", (ext,)).fetchone())  # type: ignore
+    data = {
+        "external_id": ext,
+        "thread_id": kw.get("thread_id", ""),
+        "sender": kw.get("sender", ""),
+        "recipient": kw.get("recipient", ""),
+        "subject": kw.get("subject", ""),
+        "snippet": kw.get("snippet", ""),
+        "received_at": kw.get("received_at"),
+        "is_unread": kw.get("is_unread", 1),
+        "category": kw.get("category", "uncategorized"),
+        "source": kw.get("source", "google"),
+        "created_at": utcnow(),
+    }
+    return _get("emails", _insert("emails", data))  # type: ignore[return-value]
+
+
+def list_emails(unread_only: bool = False, limit: int = 40) -> list[dict[str, Any]]:
+    conn = get_connection()
+    q = "SELECT * FROM emails"
+    if unread_only:
+        q += " WHERE is_unread=1"
+    q += " ORDER BY received_at DESC LIMIT ?"
+    return rows_to_list(conn.execute(q, (limit,)).fetchall())
+
+
+def event_by_external_id(external_id: str) -> dict[str, Any] | None:
+    conn = get_connection()
+    return row_to_dict(
+        conn.execute("SELECT * FROM events WHERE external_id=?", (external_id,)).fetchone()
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Generic helpers
 # --------------------------------------------------------------------------- #
@@ -239,6 +344,7 @@ def list_people() -> list[dict[str, Any]]:
 EVENT_FIELDS = {
     "title", "starts_at", "ends_at", "location", "kind", "prep_needed",
     "prep_notes", "attendees", "project_id", "user_id",
+    "source", "external_id", "external_updated",
 }
 
 

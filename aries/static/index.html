@@ -8,6 +8,21 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♈</text></svg>" />
 </head>
 <body>
+  <!-- Auth gate (login / first-run setup) -->
+  <div id="authGate" class="auth-gate hidden">
+    <div class="auth-card">
+      <div class="auth-sigil">♈</div>
+      <div class="auth-title">ARIES</div>
+      <div class="auth-sub" id="authSub">Constellation01</div>
+      <div id="authError" class="auth-error hidden"></div>
+      <form id="authForm" class="auth-form">
+        <input id="authName" type="text" placeholder="Name" autocomplete="username" />
+        <input id="authPassword" type="password" placeholder="Password" autocomplete="current-password" />
+        <button type="submit" id="authSubmit">Sign in</button>
+      </form>
+      <div id="authHint" class="auth-hint"></div>
+    </div>
+  </div>
   <header class="topbar">
     <div class="brand">
       <span class="sigil">♈</span>
@@ -17,11 +32,14 @@
       </div>
     </div>
     <div class="topbar-right">
-      <label class="user-picker">
+      <label class="user-picker" id="userPicker">
         <span>Speaking as</span>
         <select id="userSelect"></select>
       </label>
+      <span class="user-picker hidden" id="userIdentity"><span>Signed in:</span> <strong id="whoami"></strong></span>
       <button id="addUserBtn" class="ghost-btn" title="Add a family member">+ member</button>
+      <button id="integrationsBtn" class="ghost-btn" title="Integrations">⚙ Integrations</button>
+      <button id="logoutBtn" class="ghost-btn hidden" title="Sign out">Sign out</button>
       <span id="statusPill" class="pill pill-muted">checking…</span>
     </div>
   </header>
@@ -34,6 +52,7 @@
         <button class="brief-btn" data-brief="evening">Evening Review</button>
         <button class="brief-btn" data-brief="weekly">Weekly Review</button>
         <button class="brief-btn" data-brief="monthly">Monthly Review</button>
+        <button class="brief-btn hidden" id="syncGoogleBtn" title="Pull Google Calendar + Gmail">⟳ Sync Google</button>
       </div>
       <div id="messages" class="messages"></div>
       <form id="chatForm" class="composer">
@@ -48,6 +67,7 @@
         <button class="tab active" data-tab="projects">Projects</button>
         <button class="tab" data-tab="tasks">Tasks</button>
         <button class="tab" data-tab="events">Calendar</button>
+        <button class="tab" data-tab="inbox">Inbox</button>
         <button class="tab" data-tab="commitments">Commitments</button>
         <button class="tab" data-tab="decisions">Decisions</button>
         <button class="tab" data-tab="people">People</button>

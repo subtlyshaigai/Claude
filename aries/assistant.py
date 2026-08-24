@@ -74,7 +74,8 @@ def chat(user_message: str, *, speaker: str, user_id: int) -> dict[str, Any]:
     history = _history_to_messages(user_id)
     messages: list[dict[str, Any]] = [*history, {"role": "user", "content": user_message}]
 
-    runtime_context = build_runtime_context(speaker=speaker, snapshot=operating_snapshot())
+    snapshot = operating_snapshot() + "\n\n" + _integration_line()
+    runtime_context = build_runtime_context(speaker=speaker, snapshot=snapshot)
     system_blocks = [
         {"type": "text", "text": SYSTEM_PROMPT},
         {"type": "text", "text": runtime_context},
@@ -157,6 +158,22 @@ def narrate_briefing(kind: str, *, speaker: str, user_id: int) -> dict[str, Any]
 
     repo.log_message("assistant", f"[{kind} briefing]\n{reply}", user_id=user_id)
     return {"reply": reply, "actions": [], "offline": False, "digest": digest}
+
+
+def _integration_line() -> str:
+    """One line telling Aries whether the Google integration is usable."""
+    try:
+        from .integrations import google
+        st = google.connection_status()
+    except Exception:
+        return "INTEGRATIONS: Google — status unknown."
+    if st["connected"]:
+        return ("INTEGRATIONS: Google is CONNECTED. You may sync_google_calendar and "
+                "sync_google_inbox freely (read-only). Sending email and pushing calendar "
+                "events are gated — confirm with the user, then pass confirmed=true.")
+    if st["configured"]:
+        return "INTEGRATIONS: Google is configured but NOT connected. Ask the Principal to connect it in the Integrations panel."
+    return "INTEGRATIONS: Google is not configured. Calendar/email tools are unavailable until set up."
 
 
 def _text_from(response) -> str:

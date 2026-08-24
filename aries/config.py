@@ -36,6 +36,13 @@ class Settings:
     db_path: Path
     integrity_phrase: str
     chatlog_retention_days: int
+    require_auth: bool
+    session_ttl_hours: int
+    public_base_url: str
+    google_client_id: str
+    google_client_secret: str
+    google_credentials_file: Path
+    google_token_file: Path
 
     @property
     def llm_enabled(self) -> bool:
@@ -43,6 +50,18 @@ class Settings:
         offline mode: local data tools still work, but conversational reasoning
         is unavailable."""
         return bool(self.anthropic_api_key.strip())
+
+    @property
+    def google_configured(self) -> bool:
+        """True when OAuth client credentials are available (via env or file)."""
+        if self.google_client_id and self.google_client_secret:
+            return True
+        return self.google_credentials_file.exists()
+
+    @property
+    def oauth_redirect_uri(self) -> str:
+        base = self.public_base_url.rstrip("/") if self.public_base_url else f"http://{self.host}:{self.port}"
+        return f"{base}/api/integrations/google/callback"
 
 
 def load_settings() -> Settings:
@@ -56,6 +75,14 @@ def load_settings() -> Settings:
         except ValueError:
             return default
 
+    def _bool(name: str, default: bool) -> bool:
+        raw = os.getenv(name, "").strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return True
+        if raw in ("0", "false", "no", "off"):
+            return False
+        return default
+
     return Settings(
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
         model=os.getenv("ARIES_MODEL", "claude-sonnet-4-5").strip() or "claude-sonnet-4-5",
@@ -66,6 +93,18 @@ def load_settings() -> Settings:
         integrity_phrase=os.getenv("ARIES_INTEGRITY_PHRASE", "The stars hold steady.").strip()
         or "The stars hold steady.",
         chatlog_retention_days=_int("ARIES_CHATLOG_RETENTION_DAYS", 7),
+        require_auth=_bool("ARIES_REQUIRE_AUTH", True),
+        session_ttl_hours=_int("ARIES_SESSION_TTL_HOURS", 336),  # 14 days
+        public_base_url=os.getenv("ARIES_PUBLIC_BASE_URL", "").strip(),
+        google_client_id=os.getenv("GOOGLE_CLIENT_ID", "").strip(),
+        google_client_secret=os.getenv("GOOGLE_CLIENT_SECRET", "").strip(),
+        google_credentials_file=_resolve(
+            os.getenv("GOOGLE_CREDENTIALS_FILE", "data/google_credentials.json").strip()
+            or "data/google_credentials.json"
+        ),
+        google_token_file=_resolve(
+            os.getenv("GOOGLE_TOKEN_FILE", "data/google_token.json").strip() or "data/google_token.json"
+        ),
     )
 
 

@@ -10,6 +10,10 @@ data/*.db-wal
 data/*.db-shm
 data/backups/
 
+# Google integration secrets & tokens (never commit)
+data/google_credentials.json
+data/google_token.json
+
 # Python
 __pycache__/
 *.py[cod]

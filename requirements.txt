@@ -4,3 +4,10 @@ anthropic==0.42.0
 python-dotenv==1.0.1
 pydantic==2.10.4
 python-multipart==0.0.20
+
+# Google (Gmail + Calendar) integration. Optional: Aries runs without these,
+# reporting the integration as unavailable until they are installed and an
+# account is connected.
+google-api-python-client==2.156.0
+google-auth==2.37.0
+google-auth-oauthlib==1.2.1
