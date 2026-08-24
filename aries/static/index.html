@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Aries — Executive Chief of Staff</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♈</text></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="sigil">♈</span>
+      <div>
+        <div class="brand-name">ARIES</div>
+        <div class="brand-sub">Constellation01 · Executive Chief of Staff</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <label class="user-picker">
+        <span>Speaking as</span>
+        <select id="userSelect"></select>
+      </label>
+      <button id="addUserBtn" class="ghost-btn" title="Add a family member">+ member</button>
+      <span id="statusPill" class="pill pill-muted">checking…</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Conversation -->
+    <section class="chat-pane">
+      <div class="brief-row">
+        <button class="brief-btn" data-brief="morning">Morning Brief</button>
+        <button class="brief-btn" data-brief="evening">Evening Review</button>
+        <button class="brief-btn" data-brief="weekly">Weekly Review</button>
+        <button class="brief-btn" data-brief="monthly">Monthly Review</button>
+      </div>
+      <div id="messages" class="messages"></div>
+      <form id="chatForm" class="composer">
+        <textarea id="chatInput" rows="1" placeholder="Speak to Aries…" autocomplete="off"></textarea>
+        <button type="submit" id="sendBtn">Send</button>
+      </form>
+    </section>
+
+    <!-- Operating picture -->
+    <section class="board-pane">
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-tab="projects">Projects</button>
+        <button class="tab" data-tab="tasks">Tasks</button>
+        <button class="tab" data-tab="events">Calendar</button>
+        <button class="tab" data-tab="commitments">Commitments</button>
+        <button class="tab" data-tab="decisions">Decisions</button>
+        <button class="tab" data-tab="people">People</button>
+        <button class="tab" data-tab="memory">Memory</button>
+        <button class="tab" data-tab="orders">Standing Orders</button>
+        <button class="tab" data-tab="activity">Activity</button>
+      </nav>
+      <div id="boardBody" class="board-body"></div>
+    </section>
+  </main>
+
+  <!-- lightweight modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head"><span id="modalTitle">New</span><button id="modalClose" class="ghost-btn">✕</button></div>
+      <div id="modalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
